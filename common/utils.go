@@ -4,7 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash/crc32"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,8 +23,16 @@ func CRC32(data []byte) uint32 {
 	return crc32.ChecksumIEEE(data)
 }
 
-func CheckCRC32(data []byte, expected uint32) error {
-	if CRC32(data) != expected {
+func CheckCRC32(data []byte, expected string) error {
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return errors.New("empty crc32")
+	}
+	want, err := strconv.ParseUint(expected, 16, 32)
+	if err != nil {
+		return fmt.Errorf("invalid crc32 hex: %w", err)
+	}
+	if CRC32(data) != uint32(want) {
 		return errors.New("crc32 mismatch")
 	}
 	return nil

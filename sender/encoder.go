@@ -48,7 +48,7 @@ func BuildTransfer(filePath string, chunkSize int) (*EncodedTransfer, error) {
 			ID:        i,
 			Total:     total,
 			Data:      common.EncodeBase64(part),
-			CRC32:     common.CRC32(part),
+			CRC32:     fmt.Sprintf("%08x", common.CRC32(part)),
 			Timestamp: common.NowUnixMilli(),
 		}
 

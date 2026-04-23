@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 
-	"github.com/liyue201/goqr"
 	"qrstream/common"
+
+	"github.com/liyue201/goqr"
 )
 
 type DecoderState struct {
@@ -30,23 +32,99 @@ type TransferState struct {
 	Discarded int
 }
 
+const duplicatePayloadWindow = 300 * time.Millisecond
+
+var (
+	decodeMu            sync.Mutex
+	recentPayloadSeenAt = map[string]time.Time{}
+)
+
 func decodePackets(img image.Image) ([]common.Packet, error) {
+	fmt.Println("---- decode frame start ----")
+
 	symbols, err := goqr.Recognize(img)
 	if err != nil {
+		fmt.Println("[QR ERROR]", err)
 		return nil, err
 	}
+
+	fmt.Println("[QR SYMBOLS FOUND]", len(symbols))
+
 	out := make([]common.Packet, 0, len(symbols))
-	for _, symbol := range symbols {
-		var p common.Packet
+
+	for i, symbol := range symbols {
+
+		fmt.Println("---- SYMBOL", i, "----")
+		fmt.Println("[RAW PAYLOAD LENGTH]", len(symbol.Payload))
+		fmt.Println("[RAW PAYLOAD STRING]")
+		fmt.Println(string(symbol.Payload))
+
 		if len(symbol.Payload) == 0 {
+			fmt.Println("[SKIP] empty payload")
 			continue
 		}
-		if err := json.Unmarshal(symbol.Payload, &p); err != nil {
+
+		if shouldSkipDuplicatePayload(symbol.Payload) {
+			fmt.Println("[SKIP] duplicate payload in debounce window")
 			continue
 		}
+
+		var p common.Packet
+
+		err := json.Unmarshal(symbol.Payload, &p)
+		if err != nil {
+			fmt.Println("[JSON ERROR]", err)
+			fmt.Println("[BAD PAYLOAD]")
+			fmt.Println(string(symbol.Payload))
+			continue
+		}
+
+		fmt.Println("[JSON OK] packet parsed")
+
+		// ===== packet 基础信息 =====
+		fmt.Println("[TYPE]", p.Type)
+		fmt.Println("[SESSION]", p.SessionID)
+		fmt.Println("[FILE]", p.FileName)
+
+		// ===== chunk debug =====
+		if p.Chunk != nil {
+			fmt.Println("[CHUNK ID]", p.Chunk.ID)
+			fmt.Println("[CHUNK TOTAL]", p.Chunk.Total)
+			fmt.Println("[CHUNK DATA LEN]", len(p.Chunk.Data))
+			fmt.Println("[CHUNK CRC32]", p.Chunk.CRC32)
+		} else {
+			fmt.Println("[WARNING] chunk is nil")
+		}
+
 		out = append(out, p)
 	}
+
+	fmt.Println("---- decode frame end ----")
 	return out, nil
+}
+
+func shouldSkipDuplicatePayload(payload []byte) bool {
+	key := string(payload)
+	now := time.Now()
+
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
+
+	if ts, ok := recentPayloadSeenAt[key]; ok && now.Sub(ts) < duplicatePayloadWindow {
+		return true
+	}
+	recentPayloadSeenAt[key] = now
+
+	// periodic cleanup to bound map size
+	if len(recentPayloadSeenAt) > 2048 {
+		cutoff := now.Add(-3 * time.Second)
+		for k, v := range recentPayloadSeenAt {
+			if v.Before(cutoff) {
+				delete(recentPayloadSeenAt, k)
+			}
+		}
+	}
+	return false
 }
 
 func writeOutput(outputPath string, chunks map[int][]byte, total int) error {

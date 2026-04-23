@@ -43,7 +43,7 @@ type ReceiverUI struct {
 }
 
 func RunReceiverGUI() {
-	ui := &ReceiverUI{app: app.New()}
+	ui := &ReceiverUI{app: app.NewWithID("qrstream.receiver")}
 	ui.win = ui.app.NewWindow("QR Receiver")
 	ui.win.Resize(fyne.NewSize(980, 800))
 	ui.build()
@@ -131,19 +131,26 @@ func (r *ReceiverUI) loop(stopCh chan struct{}) {
 	ticker := time.NewTicker(captureInterval)
 	defer ticker.Stop()
 	lastPersist := time.Now()
+	lockedDisplay := -1
 
 	for {
 		select {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			frames, err := CaptureFramesAllDisplays()
-			if err != nil {
-				r.addLog("capture error: " + err.Error())
+			displayCount := NumDisplays()
+			if displayCount <= 0 {
+				r.addLog("capture error: no active displays detected")
 				continue
 			}
-
-			for _, frame := range frames {
+			for displayIdx := 0; displayIdx < displayCount; displayIdx++ {
+				if lockedDisplay >= 0 && displayIdx != lockedDisplay {
+					continue
+				}
+				frame, err := CaptureFrameByDisplay(displayIdx)
+				if err != nil {
+					continue
+				}
 				packets, err := decodePackets(frame)
 				if err != nil || len(packets) == 0 {
 					continue
@@ -152,6 +159,10 @@ func (r *ReceiverUI) loop(stopCh chan struct{}) {
 				for _, p := range packets {
 					if p.Type != common.PacketTypeChunk || p.Chunk == nil {
 						continue
+					}
+					if lockedDisplay == -1 {
+						lockedDisplay = displayIdx
+						r.addLog(fmt.Sprintf("locked on display %d", lockedDisplay))
 					}
 					if err := r.acceptChunk(p); err != nil {
 						r.addLog("chunk ignored: " + err.Error())
@@ -197,21 +208,10 @@ func (r *ReceiverUI) acceptChunk(p common.Packet) error {
 		}
 	}
 	if r.state.SessionID != p.SessionID {
-		if len(r.state.Chunks) == 0 || p.Chunk.ID == 0 {
-			r.addLog("switch to new session: " + p.SessionID)
-			r.state = &TransferState{
-				SessionID: p.SessionID,
-				FileName:  p.FileName,
-				Total:     p.Chunk.Total,
-				Chunks:    map[int][]byte{},
-				Seen:      map[int]bool{},
-			}
-		} else {
-			return fmt.Errorf("session mismatch")
-		}
+		return fmt.Errorf("session mismatch")
 	}
 	if r.state.Total != p.Chunk.Total {
-		return fmt.Errorf("session mismatch")
+		return fmt.Errorf("chunk total mismatch")
 	}
 	if r.state.Seen[p.Chunk.ID] {
 		return nil

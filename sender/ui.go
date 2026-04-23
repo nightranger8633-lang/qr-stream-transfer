@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	defaultChunkSize = 500
+	defaultChunkSize = 420
 	defaultFPS       = 10
 	defaultQRSize    = 900
+	perChunkRepeat   = 3
 )
 
 type SenderUI struct {
@@ -46,7 +47,7 @@ type SenderUI struct {
 }
 
 func RunSenderGUI() {
-	ui := &SenderUI{app: app.New()}
+	ui := &SenderUI{app: app.NewWithID("qrstream.sender")}
 	ui.win = ui.app.NewWindow("QR Sender")
 	ui.win.Resize(fyne.NewSize(980, 840))
 	ui.build()
@@ -145,6 +146,7 @@ func (s *SenderUI) runLoop(stopCh chan struct{}) {
 	defer ticker.Stop()
 
 	idx := 0
+	repeat := 0
 	for {
 		select {
 		case <-stopCh:
@@ -152,9 +154,14 @@ func (s *SenderUI) runLoop(stopCh chan struct{}) {
 		case <-ticker.C:
 			payload := s.transfer.ChunkFrames[idx]
 			s.renderPayload(payload, idx, s.transfer.ChunkCount)
-			idx++
-			if idx >= s.transfer.ChunkCount {
-				idx = 0
+
+			repeat++
+			if repeat >= perChunkRepeat {
+				repeat = 0
+				idx++
+				if idx >= s.transfer.ChunkCount {
+					idx = 0
+				}
 			}
 		}
 	}

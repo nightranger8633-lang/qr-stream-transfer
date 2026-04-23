@@ -7,6 +7,10 @@ import (
 	"github.com/kbinani/screenshot"
 )
 
+func NumDisplays() int {
+	return screenshot.NumActiveDisplays()
+}
+
 func BuildCaptureRect(displayIndex int) (image.Rectangle, error) {
 	displayCount := screenshot.NumActiveDisplays()
 	if displayCount <= 0 {
@@ -21,6 +25,14 @@ func BuildCaptureRect(displayIndex int) (image.Rectangle, error) {
 }
 
 func CaptureFrame(rect image.Rectangle) (image.Image, error) {
+	return screenshot.CaptureRect(rect)
+}
+
+func CaptureFrameByDisplay(displayIndex int) (image.Image, error) {
+	rect, err := BuildCaptureRect(displayIndex)
+	if err != nil {
+		return nil, err
+	}
 	return screenshot.CaptureRect(rect)
 }
 
