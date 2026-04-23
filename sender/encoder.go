@@ -3,20 +3,30 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"hash/crc32"
 	"os"
+	"path/filepath"
+	"time"
 
 	"qrstream/common"
 )
 
-func BuildChunkPayloads(filePath string, chunkSize int) ([]string, int, error) {
+type EncodedTransfer struct {
+	SessionID   string
+	FileName    string
+	FileSize    int64
+	ChunkSize   int
+	ChunkCount  int
+	ChunkFrames []string
+}
+
+func BuildTransfer(filePath string, chunkSize int) (*EncodedTransfer, error) {
 	if chunkSize <= 0 {
-		return nil, 0, fmt.Errorf("invalid chunk size: %d", chunkSize)
+		return nil, fmt.Errorf("invalid chunk size: %d", chunkSize)
 	}
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read file failed: %w", err)
+		return nil, fmt.Errorf("read file failed: %w", err)
 	}
 
 	total := (len(content) + chunkSize - 1) / chunkSize
@@ -24,6 +34,7 @@ func BuildChunkPayloads(filePath string, chunkSize int) ([]string, int, error) {
 		total = 1
 	}
 
+	sessionID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(content))
 	payloads := make([]string, 0, total)
 	for i := 0; i < total; i++ {
 		start := i * chunkSize
@@ -34,18 +45,38 @@ func BuildChunkPayloads(filePath string, chunkSize int) ([]string, int, error) {
 
 		part := content[start:end]
 		chunk := common.Chunk{
-			ID:    i,
-			Total: total,
-			Data:  common.EncodeBase64(part),
-			CRC32: crc32.ChecksumIEEE(part),
+			ID:        i,
+			Total:     total,
+			Data:      common.EncodeBase64(part),
+			CRC32:     common.CRC32(part),
+			Timestamp: common.NowUnixMilli(),
 		}
 
-		raw, err := json.Marshal(chunk)
+		packet := common.Packet{
+			Type:      common.PacketTypeChunk,
+			SessionID: sessionID,
+			FileName:  filepath.Base(filePath),
+			Chunk:     &chunk,
+			Meta: &common.PacketMeta{
+				TotalChunks: total,
+				FileSize:    int64(len(content)),
+				Timestamp:   common.NowUnixMilli(),
+			},
+		}
+
+		raw, err := json.Marshal(packet)
 		if err != nil {
-			return nil, 0, fmt.Errorf("marshal chunk %d failed: %w", i, err)
+			return nil, fmt.Errorf("marshal chunk %d failed: %w", i, err)
 		}
 		payloads = append(payloads, string(raw))
 	}
 
-	return payloads, len(content), nil
+	return &EncodedTransfer{
+		SessionID:   sessionID,
+		FileName:    filepath.Base(filePath),
+		FileSize:    int64(len(content)),
+		ChunkSize:   chunkSize,
+		ChunkCount:  total,
+		ChunkFrames: payloads,
+	}, nil
 }

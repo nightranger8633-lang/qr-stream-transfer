@@ -7,37 +7,39 @@ import (
 	"github.com/kbinani/screenshot"
 )
 
-type CaptureConfig struct {
-	DisplayIndex int
-	UseRegion    bool
-	X            int
-	Y            int
-	Width        int
-	Height       int
-}
-
-func BuildCaptureRect(cfg CaptureConfig) (image.Rectangle, error) {
+func BuildCaptureRect(displayIndex int) (image.Rectangle, error) {
 	displayCount := screenshot.NumActiveDisplays()
 	if displayCount <= 0 {
 		return image.Rectangle{}, fmt.Errorf("no active displays detected")
 	}
 
-	if cfg.DisplayIndex < 0 || cfg.DisplayIndex >= displayCount {
-		return image.Rectangle{}, fmt.Errorf("display index out of range: %d (active=%d)", cfg.DisplayIndex, displayCount)
+	if displayIndex < 0 || displayIndex >= displayCount {
+		return image.Rectangle{}, fmt.Errorf("display index out of range: %d (active=%d)", displayIndex, displayCount)
 	}
 
-	bounds := screenshot.GetDisplayBounds(cfg.DisplayIndex)
-	if !cfg.UseRegion {
-		return bounds, nil
-	}
+	return screenshot.GetDisplayBounds(displayIndex), nil
+}
 
-	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return image.Rectangle{}, fmt.Errorf("invalid region size: %dx%d", cfg.Width, cfg.Height)
-	}
+func CaptureFrame(rect image.Rectangle) (image.Image, error) {
+	return screenshot.CaptureRect(rect)
+}
 
-	r := image.Rect(cfg.X, cfg.Y, cfg.X+cfg.Width, cfg.Y+cfg.Height)
-	if !r.In(bounds) {
-		return image.Rectangle{}, fmt.Errorf("region %v is outside display bounds %v", r, bounds)
+func CaptureFramesAllDisplays() ([]image.Image, error) {
+	displayCount := screenshot.NumActiveDisplays()
+	if displayCount <= 0 {
+		return nil, fmt.Errorf("no active displays detected")
 	}
-	return r, nil
+	frames := make([]image.Image, 0, displayCount)
+	for i := 0; i < displayCount; i++ {
+		rect := screenshot.GetDisplayBounds(i)
+		frame, err := screenshot.CaptureRect(rect)
+		if err != nil {
+			continue
+		}
+		frames = append(frames, frame)
+	}
+	if len(frames) == 0 {
+		return nil, fmt.Errorf("capture failed on all displays")
+	}
+	return frames, nil
 }
