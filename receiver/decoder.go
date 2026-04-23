@@ -32,7 +32,7 @@ type TransferState struct {
 	Discarded int
 }
 
-const duplicatePayloadWindow = 300 * time.Millisecond
+const duplicatePayloadWindow = 0 * time.Millisecond
 
 var (
 	decodeMu            sync.Mutex
@@ -104,6 +104,10 @@ func decodePackets(img image.Image) ([]common.Packet, error) {
 }
 
 func shouldSkipDuplicatePayload(payload []byte) bool {
+	if duplicatePayloadWindow <= 0 {
+		return false
+	}
+
 	key := string(payload)
 	now := time.Now()
 

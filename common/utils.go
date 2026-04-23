@@ -12,10 +12,18 @@ import (
 )
 
 func EncodeBase64(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
+	return base64.RawURLEncoding.EncodeToString(data)
 }
 
 func DecodeBase64(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, errors.New("empty base64 payload")
+	}
+	if out, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return out, nil
+	}
+	// Backward compatibility for old sessions/resume files.
 	return base64.StdEncoding.DecodeString(s)
 }
 

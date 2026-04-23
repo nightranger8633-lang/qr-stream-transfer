@@ -8,12 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"qrstream/common"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
-	"qrstream/common"
 )
 
 const (
@@ -25,6 +26,7 @@ type ReceiverUI struct {
 	win fyne.Window
 
 	saveDir string
+	resume  bool
 
 	pathLabel     *widget.Label
 	progressLabel *widget.Label
@@ -73,6 +75,10 @@ func (r *ReceiverUI) build() {
 			r.pathLabel.SetText("保存目录: " + r.saveDir)
 		}, r.win).Show()
 	})
+	resumeCheck := widget.NewCheck("断点续传（从 .resume 恢复）", func(v bool) {
+		r.resume = v
+	})
+	resumeCheck.SetChecked(false)
 
 	r.startBtn = widget.NewButton("开始接收", func() { r.start() })
 	r.stopBtn = widget.NewButton("停止", func() { r.stop() })
@@ -80,6 +86,7 @@ func (r *ReceiverUI) build() {
 
 	top := container.NewVBox(
 		container.NewHBox(selectDir, r.startBtn, r.stopBtn),
+		resumeCheck,
 		r.pathLabel,
 		r.progressLabel,
 		r.missingLabel,
@@ -107,6 +114,9 @@ func (r *ReceiverUI) start() {
 	r.stopCh = make(chan struct{})
 	r.state = nil
 	r.logBox.SetText("")
+	r.progressLabel.SetText("Received: 0/0")
+	r.missingLabel.SetText("Missing chunks: 0")
+	r.progressBar.SetValue(0)
 	r.statusLabel.SetText("Status: Scanning screen...")
 	r.startBtn.Disable()
 	r.stopBtn.Enable()
@@ -167,7 +177,10 @@ func (r *ReceiverUI) loop(stopCh chan struct{}) {
 					if err := r.acceptChunk(p); err != nil {
 						r.addLog("chunk ignored: " + err.Error())
 					}
-					if r.state != nil && len(r.state.Chunks) == r.state.Total && r.state.Total > 0 {
+					if r.state != nil &&
+						r.state.SessionID == p.SessionID &&
+						r.state.Total > 0 &&
+						len(r.state.Chunks) >= r.state.Total {
 						if err := r.flushFile(); err != nil {
 							r.addLog("save failed: " + err.Error())
 						} else {
@@ -189,24 +202,49 @@ func (r *ReceiverUI) loop(stopCh chan struct{}) {
 }
 
 func (r *ReceiverUI) acceptChunk(p common.Packet) error {
+	newState := func() *TransferState {
+		return &TransferState{
+			SessionID: p.SessionID,
+			FileName:  p.FileName,
+			Total:     p.Chunk.Total,
+			Chunks:    map[int][]byte{},
+			Seen:      map[int]bool{},
+		}
+	}
+
+	if r.state != nil && r.state.SessionID != p.SessionID {
+		r.addLog("new session detected, reset state")
+
+		r.state = nil
+	}
 	if p.Chunk.ID < 0 || p.Chunk.Total <= 0 || p.Chunk.ID >= p.Chunk.Total {
 		return fmt.Errorf("invalid chunk id=%d total=%d", p.Chunk.ID, p.Chunk.Total)
 	}
 	if r.state == nil {
-		s, err := loadResume(r.saveDir, p.SessionID)
-		if err == nil {
-			r.state = s
-			r.addLog("resumed previous session: " + p.SessionID)
-		} else {
-			r.state = &TransferState{
-				SessionID: p.SessionID,
-				FileName:  p.FileName,
-				Total:     p.Chunk.Total,
-				Chunks:    map[int][]byte{},
-				Seen:      map[int]bool{},
+		if r.resume {
+			s, err := loadResume(r.saveDir, p.SessionID)
+			if err == nil {
+				if s.Total != p.Chunk.Total {
+					r.addLog(fmt.Sprintf("resume ignored due to total mismatch (resume=%d incoming=%d)", s.Total, p.Chunk.Total))
+					r.state = newState()
+				} else {
+					r.state = s
+					r.addLog("resumed session: " + p.SessionID)
+					r.refreshProgress()
+				}
+			} else {
+				r.state = newState()
 			}
+		} else {
+			r.state = newState()
 		}
 	}
+	fmt.Printf("ACCEPT chunk=%d total=%d chunks=%d seen=%d discarded=%d\n",
+		p.Chunk.ID,
+		r.state.Total,
+		len(r.state.Chunks),
+		len(r.state.Seen),
+		r.state.Discarded)
 	if r.state.SessionID != p.SessionID {
 		return fmt.Errorf("session mismatch")
 	}
@@ -220,11 +258,13 @@ func (r *ReceiverUI) acceptChunk(p common.Packet) error {
 	raw, err := common.DecodeBase64(p.Chunk.Data)
 	if err != nil {
 		r.state.Discarded++
-		return err
+		fmt.Printf("DROP chunk=%d reason=base64 err=%v\n", p.Chunk.ID, err)
+		return fmt.Errorf("chunk=%d base64 decode failed: %w", p.Chunk.ID, err)
 	}
 	if err := common.CheckCRC32(raw, p.Chunk.CRC32); err != nil {
 		r.state.Discarded++
-		return err
+		fmt.Printf("DROP chunk=%d reason=crc err=%v\n", p.Chunk.ID, err)
+		return fmt.Errorf("chunk=%d crc verify failed: %w", p.Chunk.ID, err)
 	}
 
 	r.state.Seen[p.Chunk.ID] = true

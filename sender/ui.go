@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	defaultChunkSize = 420
-	defaultFPS       = 10
-	defaultQRSize    = 900
-	perChunkRepeat   = 3
+	defaultChunkSize = 120
+	defaultFPS       = 3
+	defaultQRSize    = 1100
+	perChunkRepeat   = 12
 )
 
 type SenderUI struct {
