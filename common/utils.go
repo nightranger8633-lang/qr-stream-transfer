@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,13 +13,18 @@ import (
 )
 
 func EncodeBase64(data []byte) string {
-	return base64.RawURLEncoding.EncodeToString(data)
+	// Use unpadded Base32 (A-Z2-7) for better OCR robustness.
+	// Compared with base64 variants, this avoids '-', '_', '+' and '/'.
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(data)
 }
 
 func DecodeBase64(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, errors.New("empty base64 payload")
+	}
+	if out, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(s)); err == nil {
+		return out, nil
 	}
 	if out, err := base64.RawURLEncoding.DecodeString(s); err == nil {
 		return out, nil

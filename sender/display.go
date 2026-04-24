@@ -10,7 +10,7 @@ func QRImage(payload string, size int) (image.Image, error) {
 	if size < 256 {
 		size = 256
 	}
-	qr, err := qrcode.New(payload, qrcode.High)
+	qr, err := qrcode.New(payload, qrcode.Highest)
 	if err != nil {
 		return nil, err
 	}

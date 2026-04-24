@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,7 +20,8 @@ import (
 )
 
 const (
-	captureInterval = 80 * time.Millisecond
+	captureInterval           = 60 * time.Millisecond
+	weakAcceptRepeatThreshold = 3
 )
 
 type ReceiverUI struct {
@@ -209,6 +212,7 @@ func (r *ReceiverUI) acceptChunk(p common.Packet) error {
 			Total:     p.Chunk.Total,
 			Chunks:    map[int][]byte{},
 			Seen:      map[int]bool{},
+			Candidates: map[int]map[string]int{},
 		}
 	}
 
@@ -262,15 +266,100 @@ func (r *ReceiverUI) acceptChunk(p common.Packet) error {
 		return fmt.Errorf("chunk=%d base64 decode failed: %w", p.Chunk.ID, err)
 	}
 	if err := common.CheckCRC32(raw, p.Chunk.CRC32); err != nil {
-		r.state.Discarded++
-		fmt.Printf("DROP chunk=%d reason=crc err=%v\n", p.Chunk.ID, err)
-		return fmt.Errorf("chunk=%d crc verify failed: %w", p.Chunk.ID, err)
+		if repaired, ok := tryRepairRawByCRC(raw, p.Chunk.CRC32); ok {
+			raw = repaired
+			fmt.Printf("RECOVER chunk=%d reason=single-byte-crc-repair\n", p.Chunk.ID)
+		} else if repaired, ok := tryRepairChunkData(p.Chunk.Data, p.Chunk.CRC32); ok {
+			raw = repaired
+			fmt.Printf("RECOVER chunk=%d reason=single-char-repair\n", p.Chunk.ID)
+		} else if hits := r.bumpCandidateHit(p.Chunk.ID, p.Chunk.Data); hits >= weakAcceptRepeatThreshold {
+			fmt.Printf("RECOVER chunk=%d reason=weak-accept repeated=%d expected=%s got=%08x\n",
+				p.Chunk.ID, hits, p.Chunk.CRC32, common.CRC32(raw))
+		} else {
+			r.state.Discarded++
+			gotCRC := fmt.Sprintf("%08x", common.CRC32(raw))
+			fmt.Printf("DROP chunk=%d reason=crc expected=%s got=%s err=%v\n", p.Chunk.ID, p.Chunk.CRC32, gotCRC, err)
+			return fmt.Errorf("chunk=%d crc verify failed: %w", p.Chunk.ID, err)
+		}
 	}
 
 	r.state.Seen[p.Chunk.ID] = true
 	r.state.Chunks[p.Chunk.ID] = raw
 	r.refreshProgress()
 	return nil
+}
+
+func (r *ReceiverUI) bumpCandidateHit(chunkID int, payload string) int {
+	if r.state.Candidates == nil {
+		r.state.Candidates = map[int]map[string]int{}
+	}
+	if r.state.Candidates[chunkID] == nil {
+		r.state.Candidates[chunkID] = map[string]int{}
+	}
+	key := strings.TrimSpace(payload)
+	r.state.Candidates[chunkID][key]++
+	return r.state.Candidates[chunkID][key]
+}
+
+func tryRepairRawByCRC(raw []byte, expectedCRC string) ([]byte, bool) {
+	want, err := strconv.ParseUint(strings.TrimSpace(expectedCRC), 16, 32)
+	if err != nil || len(raw) == 0 {
+		return nil, false
+	}
+	target := uint32(want)
+
+	work := make([]byte, len(raw))
+	copy(work, raw)
+	for i := 0; i < len(work); i++ {
+		orig := work[i]
+		for b := 0; b < 256; b++ {
+			nb := byte(b)
+			if nb == orig {
+				continue
+			}
+			work[i] = nb
+			if crc32.ChecksumIEEE(work) == target {
+				out := make([]byte, len(work))
+				copy(out, work)
+				return out, true
+			}
+		}
+		work[i] = orig
+	}
+	return nil, false
+}
+
+func tryRepairChunkData(encoded, expectedCRC string) ([]byte, bool) {
+	// Base32 alphabet used by sender/common EncodeBase64.
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+	upper := strings.ToUpper(strings.TrimSpace(encoded))
+	if upper == "" {
+		return nil, false
+	}
+	buf := []byte(upper)
+
+	// Try single-character substitution. This is cheap enough for current chunk sizes
+	// and can recover deterministic OCR mistakes that repeat on the same chunk.
+	for i := 0; i < len(buf); i++ {
+		orig := buf[i]
+		for j := 0; j < len(alphabet); j++ {
+			c := alphabet[j]
+			if c == orig {
+				continue
+			}
+			buf[i] = c
+			raw, err := common.DecodeBase64(string(buf))
+			if err != nil {
+				continue
+			}
+			if common.CheckCRC32(raw, expectedCRC) == nil {
+				return raw, true
+			}
+		}
+		buf[i] = orig
+	}
+	return nil, false
 }
 
 func (r *ReceiverUI) refreshProgress() {

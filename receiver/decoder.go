@@ -29,6 +29,7 @@ type TransferState struct {
 	Total     int
 	Chunks    map[int][]byte
 	Seen      map[int]bool
+	Candidates map[int]map[string]int
 	Discarded int
 }
 
@@ -188,6 +189,7 @@ func loadResume(saveDir, sessionID string) (*TransferState, error) {
 		Total:     ds.Total,
 		Chunks:    make(map[int][]byte, len(ds.Chunks)),
 		Seen:      make(map[int]bool, len(ds.Chunks)),
+		Candidates: make(map[int]map[string]int),
 	}
 	for id, b64 := range ds.Chunks {
 		part, err := common.DecodeBase64(b64)
